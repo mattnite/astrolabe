@@ -1,0 +1,8 @@
+#!/bin/sh
+
+ARCHIVE=/var/www/archive
+for USER in $(ls $ARCHIVE)
+do
+        zig-cache/bin/astro-adduser $USER
+        find $ARCHIVE/$USER -type f -exec zig-cache/bin/astro-publish $USER {} \;
+done
