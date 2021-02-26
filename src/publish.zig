@@ -232,7 +232,11 @@ pub fn main() !void {
         try client.send(void, SADD.init(tag_key, &[_][]const u8{package_id}));
     }
 
+    // TODO: rollback
     try client.send(void, SADD.init("pkgs", &[_][]const u8{package_id}));
+
+    const user_pkgs_key = try std.fmt.allocPrint(allocator, "user:{s}:pkgs", .{username});
+    try client.send(void, SADD.init(user_pkgs_key, &[_][]const u8{name}));
 
     // move file
     const user_path = try std.fs.path.join(allocator, &[_][]const u8{ "/var/www/archive", username });

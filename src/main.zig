@@ -62,11 +62,11 @@ pub fn main() !void {
         comptime router.router(&[_]router.Route{
             //router.get("/", webui),
             router.get("/pkgs", index), // return all latest packages
-            //router.get("/pkgs/:user", index), // return all latest packages for a user
+            router.get("/pkgs/:user", userPkgs), // return all latest packages for a user
             router.get("/pkgs/:user/:pkg", versions),
             router.get("/pkgs/:user/:pkg/latest", latest),
             router.get("/pkgs/:user/:pkg/:version", pkgInfo),
-            //router.get("/tags/:tag", index), // return all latest packages for a tag
+            router.get("/tags/:tag", tagPkgs), // return all latest packages for a tag
             router.get("/trees/:user/:pkg/:version/*", trees),
             router.get("/archive/:user/:pkg/:version", archive),
             router.get("/*", catchall),
@@ -260,6 +260,60 @@ fn versions(resp: *http.Response, req: http.Request, args: struct {
         try json.arrayElem();
         try json.emitString(ver);
     }
+    try json.endArray();
+}
+
+fn userPkgs(resp: *http.Response, req: http.Request, user: []const u8) !void {
+    const key = try std.fmt.allocPrint(allocator, "user:{s}:pkgs", .{user});
+    defer allocator.free(key);
+
+    var client: redis.Client = undefined;
+    try client.init(try std.net.connectUnixSocket("/var/run/redis/redis.sock"));
+    defer client.close();
+
+    // TODO: return 404 if user doesn't exist
+    const pkgs = try client.sendAlloc([][]const u8, allocator, .{ "SMEMBERS", key });
+    defer freeReply(pkgs, allocator);
+
+    // TODO: content type
+
+    var json = std.json.writeStream(resp.writer(), 5);
+    try json.beginArray();
+
+    for (pkgs) |pkg| {
+        try json.arrayElem();
+        try streamPkgToJson(&client, &json, user, pkg);
+    }
+
+    try json.endArray();
+}
+
+fn tagPkgs(resp: *http.Response, req: http.Request, tag: []const u8) !void {
+    const key = try std.fmt.allocPrint(allocator, "tag:{s}", .{tag});
+    defer allocator.free(key);
+
+    var client: redis.Client = undefined;
+    try client.init(try std.net.connectUnixSocket("/var/run/redis/redis.sock"));
+    defer client.close();
+
+    const pkgs = try client.sendAlloc([][]const u8, allocator, .{ "SMEMBERS", key });
+    defer freeReply(pkgs, allocator);
+
+    // TODO content type
+    var json = std.json.writeStream(resp.writer(), 5);
+    try json.beginArray();
+
+    for (pkgs) |pkg| {
+        try json.arrayElem();
+        var it = std.mem.tokenize(pkg, "/");
+        try streamPkgToJson(
+            &client,
+            &json,
+            it.next() orelse return error.NoUser,
+            it.next() orelse return error.NoPkg,
+        );
+    }
+
     try json.endArray();
 }
 
