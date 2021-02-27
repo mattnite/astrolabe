@@ -60,16 +60,14 @@ pub fn main() !void {
         allocator,
         try std.net.Address.parseIp("127.0.0.1", 8080),
         comptime router.router(&[_]router.Route{
-            //router.get("/", webui),
             router.get("/pkgs", index), // return all latest packages
             router.get("/pkgs/:user", userPkgs), // return all latest packages for a user
             router.get("/pkgs/:user/:pkg", versions),
             router.get("/pkgs/:user/:pkg/latest", latest),
             router.get("/pkgs/:user/:pkg/:version", pkgInfo),
             router.get("/tags/:tag", tagPkgs), // return all latest packages for a tag
-            router.get("/trees/:user/:pkg/:version/*", trees),
+            router.get("/trees/:user/:pkg/:version", trees),
             router.get("/archive/:user/:pkg/:version", archive),
-            router.get("/*", catchall),
         }),
     );
 }
@@ -89,6 +87,9 @@ fn streamPkgToJson(
     pkg: []const u8,
 ) !void {
     const semver = try getLatest(client, user, pkg);
+    const ver_str = try std.fmt.allocPrint(allocator, "{}", .{semver});
+    defer allocator.free(ver_str);
+
     const key = try std.fmt.allocPrint(allocator, "user:{s}:pkg:{s}:{}", .{
         user,
         pkg,
@@ -115,6 +116,9 @@ fn streamPkgToJson(
 
     try json.objectField("pkg");
     try json.emitString(pkg);
+
+    try json.objectField("version");
+    try json.emitString(ver_str);
 
     inline for (std.meta.fields(PkgMetadata)) |field| {
         switch (field.field_type) {
@@ -228,7 +232,7 @@ fn index(resp: *http.Response, req: http.Request) !void {
     };
     defer freeReply(json, allocator);
 
-    // TODO: set content type
+    try resp.headers.put("Content-Type", "application/json");
     try resp.writer().writeAll(json);
 }
 
@@ -271,12 +275,16 @@ fn userPkgs(resp: *http.Response, req: http.Request, user: []const u8) !void {
     try client.init(try std.net.connectUnixSocket("/var/run/redis/redis.sock"));
     defer client.close();
 
-    // TODO: return 404 if user doesn't exist
+    const exists = try client.send(u1, .{ "EXISTS", key[0 .. key.len - 5] });
+    if (exists == 0) {
+        try resp.notFound();
+        return;
+    }
+
     const pkgs = try client.sendAlloc([][]const u8, allocator, .{ "SMEMBERS", key });
     defer freeReply(pkgs, allocator);
 
-    // TODO: content type
-
+    try resp.headers.put("Content-Type", "application/json");
     var json = std.json.writeStream(resp.writer(), 5);
     try json.beginArray();
 
@@ -296,10 +304,16 @@ fn tagPkgs(resp: *http.Response, req: http.Request, tag: []const u8) !void {
     try client.init(try std.net.connectUnixSocket("/var/run/redis/redis.sock"));
     defer client.close();
 
+    const exists = try client.send(u1, .{ "EXISTS", key });
+    if (exists == 0) {
+        try resp.notFound();
+        return;
+    }
+
     const pkgs = try client.sendAlloc([][]const u8, allocator, .{ "SMEMBERS", key });
     defer freeReply(pkgs, allocator);
 
-    // TODO content type
+    try resp.headers.put("Content-Type", "application/json");
     var json = std.json.writeStream(resp.writer(), 5);
     try json.beginArray();
 
@@ -490,7 +504,6 @@ fn trees(resp: *http.Response, req: http.Request, args: struct {
     user: []const u8,
     pkg: []const u8,
     version: []const u8,
-    path: []const u8,
 }) !void {
     var query = try req.url.queryParameters(allocator);
     defer query.deinit();
@@ -524,7 +537,6 @@ fn trees(resp: *http.Response, req: http.Request, args: struct {
     var fifo = std.fifo.LinearFifo(u8, .{ .Static = std.mem.page_size }).init();
 
     // set headers
-    try resp.headers.put("Content-Type", "application/plain");
     try resp.headers.put("Access-Control-Allow-Origin", "*");
     fifo.pump(extractor.reader(), resp.writer()) catch |err| {
         if (err == error.FileNotFound)
@@ -561,9 +573,4 @@ fn archive(resp: *http.Response, req: http.Request, args: struct {
 
     try fs.serve(resp, req);
     try client.send(void, .{ "HINCRBY", key, "downloads", 1 });
-}
-
-// use for future potential ip blocking
-fn catchall(resp: *http.Response, req: http.Request) !void {
-    try resp.writer().writeAll("catchall");
 }
