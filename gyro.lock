@@ -1,5 +1,5 @@
 pkg default gyro zzz 0.0.1
 pkg default gyro version 0.0.0
+github Luukdegram apple_pie master src/apple_pie.zig 8f04cda8d813a999bf81e2470f3c2576fa5d5c6e
 pkg default gyro tar 0.0.1
 pkg default gyro mecha 0.0.0
-github Luukdegram apple_pie master src/apple_pie.zig b6bdada9584ab09cb481763b96cd6924c9d038b8

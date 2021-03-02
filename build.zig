@@ -19,11 +19,6 @@ pub fn build(b: *Builder) void {
         pkgs.addAllTo(@field(progs, field.name));
     }
 
-    if (mode != .Debug) {
-        progs.server.linkSystemLibrary("jemalloc");
-        progs.server.linkLibC();
-    }
-
     const run_cmd = progs.server.run();
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {

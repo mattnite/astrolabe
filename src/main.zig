@@ -20,15 +20,12 @@ const archive_path = "/var/www/archive";
 
 pub const io_mode = .evented;
 
-var gpa = if (builtin.mode == .Debug)
-    std.heap.GeneralPurposeAllocator(.{}){}
-else
-    undefined;
+var gpa = std.heap.GeneralPurposeAllocator(.{
+    .stack_trace_frames = 20,
+}){};
+const allocator = &gpa.allocator;
 
-const allocator = if (builtin.mode == .Debug)
-    &gpa.allocator
-else
-    std.heap.c_allocator;
+var server = http.Server.init();
 
 const interrupt = os.Sigaction{
     .handler = .{ .sigaction = interruptFn },
@@ -38,28 +35,25 @@ const interrupt = os.Sigaction{
 
 fn interruptFn(sig: i32, info: *const os.siginfo_t, ctx_ptr: ?*const c_void) callconv(.C) void {
     if (sig == std.c.SIGINT) {
-        if (builtin.mode == .Debug) {
-            _ = gpa.deinit();
-        }
+        server.shutdown();
+        _ = gpa.deinit();
         std.process.exit(0);
     }
 }
 
 pub fn main() !void {
-    defer if (builtin.mode == .Debug) {
-        _ = gpa.deinit();
-    };
-
-    os.sigaction(std.c.SIGINT, &interrupt, null);
+    defer _ = gpa.deinit();
 
     try fs.init(allocator, .{ .dir_path = archive_path, .base_path = "archive" });
     defer fs.deinit();
 
+    os.sigaction(std.c.SIGINT, &interrupt, null);
     @setEvalBranchQuota(2000);
-    try http.listenAndServe(
+    try server.run(
         allocator,
-        try std.net.Address.parseIp("127.0.0.1", 8080),
+        try std.net.Address.parseIp("127.0.0.1", 42069),
         comptime router.router(&[_]router.Route{
+            router.get("/", catchall),
             router.get("/pkgs", index), // return all latest packages
             router.get("/pkgs/:user", userPkgs), // return all latest packages for a user
             router.get("/pkgs/:user/:pkg", versions),
@@ -68,6 +62,7 @@ pub fn main() !void {
             router.get("/tags/:tag", tagPkgs), // return all latest packages for a tag
             router.get("/trees/:user/:pkg/:version", trees),
             router.get("/archive/:user/:pkg/:version", archive),
+            router.get("/*", catchall),
         }),
     );
 }
@@ -114,7 +109,7 @@ fn streamPkgToJson(
     try json.objectField("user");
     try json.emitString(user);
 
-    try json.objectField("pkg");
+    try json.objectField("name");
     try json.emitString(pkg);
 
     try json.objectField("version");
@@ -233,6 +228,7 @@ fn index(resp: *http.Response, req: http.Request) !void {
     defer freeReply(json, allocator);
 
     try resp.headers.put("Content-Type", "application/json");
+    try resp.headers.put("Access-Control-Allow-Origin", "*");
     try resp.writer().writeAll(json);
 }
 
@@ -265,6 +261,9 @@ fn versions(resp: *http.Response, req: http.Request, args: struct {
         try json.emitString(ver);
     }
     try json.endArray();
+
+    try resp.headers.put("Content-Type", "application/json");
+    try resp.headers.put("Access-Control-Allow-Origin", "*");
 }
 
 fn userPkgs(resp: *http.Response, req: http.Request, user: []const u8) !void {
@@ -285,6 +284,7 @@ fn userPkgs(resp: *http.Response, req: http.Request, user: []const u8) !void {
     defer freeReply(pkgs, allocator);
 
     try resp.headers.put("Content-Type", "application/json");
+    try resp.headers.put("Access-Control-Allow-Origin", "*");
     var json = std.json.writeStream(resp.writer(), 5);
     try json.beginArray();
 
@@ -314,6 +314,7 @@ fn tagPkgs(resp: *http.Response, req: http.Request, tag: []const u8) !void {
     defer freeReply(pkgs, allocator);
 
     try resp.headers.put("Content-Type", "application/json");
+    try resp.headers.put("Access-Control-Allow-Origin", "*");
     var json = std.json.writeStream(resp.writer(), 5);
     try json.beginArray();
 
@@ -375,6 +376,8 @@ fn latest(resp: *http.Response, req: http.Request, args: struct {
     } else {
         try resp.writer().print("{}", .{try getLatest(&client, args.user, args.pkg)});
     }
+
+    try resp.headers.put("Access-Control-Allow-Origin", "*");
 }
 
 const PkgMetadata = struct {
@@ -434,10 +437,14 @@ fn pkgInfo(resp: *http.Response, req: http.Request, args: struct {
     var json = std.json.writeStream(resp.writer(), 4);
     try json.beginObject();
 
-    inline for (std.meta.fields(@TypeOf(args))) |field| {
-        try json.objectField(field.name);
-        try json.emitString(@field(args, field.name));
-    }
+    try json.objectField("user");
+    try json.emitString(args.user);
+
+    try json.objectField("name");
+    try json.emitString(args.pkg);
+
+    try json.objectField("version");
+    try json.emitString(args.version);
 
     inline for (std.meta.fields(PkgMetadata)) |field| {
         switch (field.field_type) {
@@ -478,7 +485,8 @@ fn pkgInfo(resp: *http.Response, req: http.Request, args: struct {
     try json.objectField("deps");
     try json.beginArray();
     for (deps) |dep| {
-        const value_tree = try parser.parse(dep);
+        var value_tree = try parser.parse(dep);
+        defer value_tree.deinit();
 
         try json.arrayElem();
         try json.emitJson(value_tree.root);
@@ -489,7 +497,8 @@ fn pkgInfo(resp: *http.Response, req: http.Request, args: struct {
     try json.objectField("build_deps");
     try json.beginArray();
     for (build_deps) |build_dep| {
-        const value_tree = try parser.parse(build_dep);
+        var value_tree = try parser.parse(build_dep);
+        defer value_tree.deinit();
 
         try json.arrayElem();
         try json.emitJson(value_tree.root);
@@ -498,6 +507,9 @@ fn pkgInfo(resp: *http.Response, req: http.Request, args: struct {
     try json.endArray();
 
     try json.endObject();
+
+    try resp.headers.put("Content-Type", "application/json");
+    try resp.headers.put("Access-Control-Allow-Origin", "*");
 }
 
 fn trees(resp: *http.Response, req: http.Request, args: struct {
@@ -514,6 +526,7 @@ fn trees(resp: *http.Response, req: http.Request, args: struct {
             return;
         },
     });
+    defer allocator.free(subpath);
 
     const semver = try version.Semver.parse(args.version);
     const path = try std.fs.path.join(
@@ -573,4 +586,8 @@ fn archive(resp: *http.Response, req: http.Request, args: struct {
 
     try fs.serve(resp, req);
     try client.send(void, .{ "HINCRBY", key, "downloads", 1 });
+}
+
+fn catchall(resp: *http.Response, req: http.Request) !void {
+    try resp.notFound();
 }

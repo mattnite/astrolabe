@@ -2,11 +2,11 @@ deps:
   gyro/zzz: ^0.0.0
   gyro/version: ^0.0.0
   apple_pie:
-    src: url: "file://../apple_pie"
-    #  github:
-    #    user: Luukdegram
-    #    repo: apple_pie
-    #    ref: master
+    src:
+      github:
+        user: Luukdegram
+        repo: apple_pie
+        ref: master
     root: src/apple_pie.zig
   okredis:
     src:
