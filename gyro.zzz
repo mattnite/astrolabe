@@ -10,6 +10,6 @@ deps:
     root: src/apple_pie.zig
   okredis:
     src:
-      url: "file://../zig-okredis"
+      local: "../zig-okredis"
     root: src/okredis.zig
   gyro/tar: ^0.0.1
